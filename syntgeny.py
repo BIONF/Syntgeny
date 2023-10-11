@@ -49,9 +49,11 @@ def starting_subprocess(cmd, mode ='silent', time_out = None):
     except subprocess.TimeoutExpired:
         return 1
 class gene:
-    def __init__(self, name, contig, start, end, strand,position, longest_isoform):
+    def __init__(self, name, species, contig, gene_count_contig, start, end, strand,position, longest_isoform):
         self.name = name
+        self.species = species
         self.contig = contig
+        self.gene_count_contig = gene_count_contig
         self.start = start
         self.end = end
         self.strand = strand
@@ -70,14 +72,15 @@ class gene:
 
 ########################### functions ##########################################
 
-def get_nb_from_gff(gff_path, neighbours, seed):
+def get_nb_from_gff(gff_path, neighbours, seed, refSpec):
     gene_stack = deque()
     N = int(neighbours)
     stop = False
     print(seed)
     protein_names = set()
     mrna_names = set()
-    #gene = False
+    gene_count_contig = 0
+    old_contig = ''
     with open(gff_path) as gff:
         for line in gff:
             try:
@@ -85,6 +88,10 @@ def get_nb_from_gff(gff_path, neighbours, seed):
             except ValueError:
                 continue
             if type == 'gene':
+                if old_contig != contig:
+                    old_contig = contig
+                    gene_count_contig = 0
+                gene_count_contig +=1
                 if gene_stack:
                     gene_stack[0].set_protein_ids(protein_names)
                     gene_stack[0].set_mrna_ids(mrna_names)
@@ -99,7 +106,7 @@ def get_nb_from_gff(gff_path, neighbours, seed):
                         gene_stack.pop()
                     else:
                         return gene_stack
-                gene_stack.appendleft(gene(name, contig, start, end, strand, None, None))
+                gene_stack.appendleft(gene(name, refSpec, contig, gene_count_contig, start, end, strand, None, None))
             elif type == 'CDS':
                 try:
                     protein_name = re.search(r'Name=(.*?);', att).group(1)
@@ -172,7 +179,6 @@ def start_fdog(seed_folder, refSpec, searchTaxaDir, annodir, coreTaxaDir, name, 
 def parse_profile(fdog_out):
     profile_file = open(fdog_out, 'r')
     profile= profile_file.readlines()
-
     seed_presence = {}
     seed_orthologs = {}
     genes_to_extract = {}
@@ -194,8 +200,73 @@ def parse_profile(fdog_out):
 
     return seed_presence, seed_orthologs, genes_to_extract
 
-def get_positions_from_gff(gff_path, genes):
-    pass
+def get_positions_from_gff(gff_path, genes, taxa):
+    gene_name = ''
+    gene_start = 0
+    gene_stop = 0
+    gene_contig = ''
+    gene_strand = ''
+    gene_counter_contig = 0
+    old_contig = ''
+
+    gene_dict = {}
+
+    with open(gff_path,'r') as gff:
+        for line in gff:
+            if line.startswith('#'):
+                pass
+            else:
+                contig, source, type, start, end, score, strand, phase, att = line.split('\t')
+                if type == 'gene':
+                    if old_contig != contig:
+                        old_contig = contig
+                        gene_counter_contig = 0
+                    gene_start = start
+                    gene_stop = end
+                    gene_strand = strand
+                    gene_contig = contig
+                    try:
+                        gene_name = re.search(r'Name=(.*?);', att).group(1)
+                    except AttributeError:
+                        gene_name = re.search(r'Name=(.*?)\n', att).group(1)
+                    gene_counter_contig +=1
+                    if gene_name in genes:
+                        gene_dict[gene_name] = gene(gene_name, taxa, gene_contig, gene_counter_contig, gene_start, gene_stop, gene_strand, None, None)
+                elif type == 'CDS':
+                    try:
+                        protein_name = re.search(r'Name=(.*?);', att).group(1)
+                    except AttributeError:
+                        protein_name = None
+                    if protein_name in genes:
+                        gene_dict[protein_name] = gene(gene_name, taxa, gene_contig, gene_counter_contig, gene_start, gene_stop, gene_strand, None, None)
+                elif type == 'mRNA':
+                    try:
+                        mRNA_name = re.search(r'Name=(.*?);', att).group(1)
+                    except AttributeError:
+                        mRNA_name = None
+                    if mRNA_name in genes:
+                        gene_dict[mRNA_name] = gene(gene_name, taxa, gene_contig, gene_counter_contig, gene_start, gene_stop, gene_strand, None, None)
+
+    #print(gene_dict)
+    return gene_dict
+
+def mapping(path, genes):
+    dict = {}
+    gene_set= set()
+    with open(path, 'r') as file:
+        for line in file:
+            line = line.rstrip()
+            gff, protein = line.split('\t')
+            if genes == set():
+                return dict, gene_set
+            if protein in genes:
+                dict[protein] = gff
+                gene_set.add(gff)
+                genes.remove(protein)
+
+
+
+
 def main ():
     #################### handle user input #####################################
 
@@ -238,12 +309,12 @@ def main ():
 
 
     #default_path = default_data_path() # in case I want to use the QfO data for core compilation, have ti find a away to add the reference species data
-
-    genes = get_nb_from_gff(gff_path, ng, seed)
+    gff_file = f"{gff_path}/{refSpec}.gff"
+    genes = get_nb_from_gff(gff_file, ng, seed, refSpec)
     genes = nb_validation(genes,ng)
 
     for obj in genes:
-        print(obj.name, obj.contig, obj.start, obj.end, obj.strand, obj.position, sep=' ')
+        print(obj.name, obj.species, obj.contig, obj.gene_count_contig, obj.start, obj.end, obj.strand, obj.position, sep=' ')
 
     for gene in genes:
         seed_folder = out_folder + "/tmp/seeds/"
@@ -262,15 +333,27 @@ def main ():
     print(f'{seed_orthologs}\n')
     print(f'{genes_to_extract}\n')
 
-    if taxa == '':
-        searchTaxa = os.listdir(searchpath)
+    if taxa_path == '':
+        searchTaxa = [i.replace('.gff', '') for i in os.listdir(searchpath)]
     else:
         searchTaxa = open(taxa_path,'r').readlines()
 
+    gene_protein_mapping = {}
+    gene_dict = {}
     for taxa in searchTaxa:
-        gff_file = f"{gff_path}/{taxa}/{taxa}.gff"
-        get_positions_from_gff(gff_file, genes_to_extract[taxa])
+        #print(taxa)
+        gff_file = f"{gff_path}/{taxa}.gff"
+        if os.path.exists(f"{searchpath}/{taxa}/{taxa}.fa.mapping"):
+            gene_protein_mapping, mapped_set = mapping(f"{searchpath}/{taxa}/{taxa}.fa.mapping", genes_to_extract[taxa])
+            gene_dict[taxa] = get_positions_from_gff(gff_file, mapped_set, taxa)
+        else:
+            gene_dict[taxa] = get_positions_from_gff(gff_file, genes_to_extract[taxa], taxa)
 
+    for taxa in gene_dict:
+        print(taxa)
+        for g in gene_dict[taxa]:
+            obj = gene_dict[taxa][g]
+            print(g, obj.name, obj.species, obj.contig, obj.gene_count_contig, obj.start, obj.end, obj.strand, obj.position, sep=' ')
     end = start - time.time()
     print(end)
 
