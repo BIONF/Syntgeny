@@ -135,32 +135,51 @@ def nb_validation(genes, ng):
         for i in to_pop:
             genes.remove(i)
         return genes
-def extract_seq(fasta_path, gene, out_folder):
+def extract_seq(fasta_path, gene, out_folder, mapping_dict):
     isoforms = max(len(gene.mrna_ids), len(gene.protein_ids))
-    print(gene.mrna_ids)
+
     with open(out_folder + gene.name + ".fa", "w") as f:
         max_length = 0
         id = None
         seq = None
         for seq_record in SeqIO.parse(fasta_path, "fasta"):
             if isoforms > 0:
-                if seq_record.id in gene.mrna_ids:
-                    if len(seq_record.seq) > max_length:
-                        id = seq_record.id
-                        seq = seq_record.seq
-                    isoforms -=1
-                elif seq_record.id in gene.protein_ids:
-                    if len(seq_record.seq) > max_length:
-                        id = seq_record.id
-                        seq = seq_record.seq
-                    isoforms -= 1
+                if mapping_dict == {}:
+                    if seq_record.id in gene.mrna_ids:
+                        if len(seq_record.seq) > max_length:
+                            id = seq_record.id
+                            seq = seq_record.seq
+                        isoforms -=1
+                    elif seq_record.id in gene.protein_ids:
+                        if len(seq_record.seq) > max_length:
+                            id = seq_record.id
+                            seq = seq_record.seq
+                        isoforms -= 1
+                else:
+                    if mapping_dict[seq_record.id] in gene.mrna_ids:
+                        if len(seq_record.seq) > max_length:
+                            id = mapping_dict[seq_record.id]
+                            seq = seq_record.seq
+                        isoforms -=1
+                    elif mapping_dict[seq_record.id] in gene.protein_ids:
+                        if len(seq_record.seq) > max_length:
+                            id = mapping_dict[seq_record.id]
+                            seq = seq_record.seq
+                        isoforms -= 1
+
             else:
                 f.write(">" + str(id) + "\n")
                 f.write(str(seq) + "\n")
                 return id
 
-def parse_mapping_file():
-    pass
+def parse_mapping_file(path):
+    dict = {}
+    with open(path, 'r') as file:
+        for line in file:
+            line = line.rstrip()
+            gff, protein = line.split('\t')
+            dict[protein] = gff
+    return dict
 
 def default_data_path():
     sp = setupfDog.get_source_path()
@@ -178,7 +197,7 @@ def start_fdog(seed_folder, refSpec, searchTaxaDir, annodir, coreTaxaDir, name, 
 
 def parse_profile(fdog_out):
     profile_file = open(fdog_out, 'r')
-    profile= profile_file.readlines()
+    profile = profile_file.readlines()
     seed_presence = {}
     seed_orthologs = {}
     genes_to_extract = {}
@@ -210,6 +229,8 @@ def get_positions_from_gff(gff_path, genes, taxa):
     old_contig = ''
 
     gene_dict = {}
+    contig_dict = {}
+    on_contig = False
 
     with open(gff_path,'r') as gff:
         for line in gff:
@@ -219,8 +240,13 @@ def get_positions_from_gff(gff_path, genes, taxa):
                 contig, source, type, start, end, score, strand, phase, att = line.split('\t')
                 if type == 'gene':
                     if old_contig != contig:
+                        if old_contig != '' and on_contig == True:
+                            contig_dict[old_contig] = gene_counter_contig
                         old_contig = contig
                         gene_counter_contig = 0
+                        on_contig = False
+                        if genes == set():
+                            return gene_dict, contig_dict
                     gene_start = start
                     gene_stop = end
                     gene_strand = strand
@@ -231,39 +257,94 @@ def get_positions_from_gff(gff_path, genes, taxa):
                         gene_name = re.search(r'Name=(.*?)\n', att).group(1)
                     gene_counter_contig +=1
                     if gene_name in genes:
+                        on_contig = True
                         gene_dict[gene_name] = gene(gene_name, taxa, gene_contig, gene_counter_contig, gene_start, gene_stop, gene_strand, None, None)
+                        genes.remove(gene_name)
                 elif type == 'CDS':
                     try:
                         protein_name = re.search(r'Name=(.*?);', att).group(1)
                     except AttributeError:
                         protein_name = None
                     if protein_name in genes:
+                        on_contig = True
                         gene_dict[protein_name] = gene(gene_name, taxa, gene_contig, gene_counter_contig, gene_start, gene_stop, gene_strand, None, None)
+                        genes.remove(protein_name)
                 elif type == 'mRNA':
                     try:
                         mRNA_name = re.search(r'Name=(.*?);', att).group(1)
                     except AttributeError:
                         mRNA_name = None
                     if mRNA_name in genes:
+                        on_contig = True
                         gene_dict[mRNA_name] = gene(gene_name, taxa, gene_contig, gene_counter_contig, gene_start, gene_stop, gene_strand, None, None)
+                        genes.remove(mRNA_name)
 
     #print(gene_dict)
-    return gene_dict
+    #return gene_dict, contig_dict
 
-def mapping(path, genes):
-    dict = {}
-    gene_set= set()
-    with open(path, 'r') as file:
-        for line in file:
-            line = line.rstrip()
-            gff, protein = line.split('\t')
-            if genes == set():
-                return dict, gene_set
-            if protein in genes:
-                dict[protein] = gff
-                gene_set.add(gff)
-                genes.remove(protein)
+def mapping(path, genes, dict=None):
+    gene_set = set()
+    if dict == None:
+        dict = {}
+        with open(path, 'r') as file:
+            for line in file:
+                line = line.rstrip()
+                gff, protein = line.split('\t')
+                if genes == set():
+                    return dict, gene_set
+                if protein in genes:
+                    dict[protein] = gff
+                    gene_set.add(gff)
+                    genes.remove(protein)
+    else:
+        for i in genes:
+            gene_set.add(dict[i])
+        return dict, gene_set
 
+def get_nb_position():
+    pass
+def create_output(searchTaxa, refSpec, seed, genes, gene_dict_orthologs, seed_orthologs, contig_dict, gene_protein_mapping):
+    data = []
+    nb = len(genes)
+    row = []
+    #print(seed_orthologs)
+    # move refSpec to list beginning
+    searchTaxa.remove(refSpec)
+    searchTaxa.insert(0, refSpec)
+    for index in range(nb-1,-1, -1):
+        #print(genes[index].position)
+        for taxa in searchTaxa:
+            nb_id = genes[index].name
+            nb_position = genes[index].position
+            name_dict = genes[index].name
+            try:
+                ogs = seed_orthologs[name_dict]
+            except KeyError:
+                name_dict = (genes[index].name).replace('.', '_')
+            try:
+                ogs = seed_orthologs[name_dict][taxa]
+            except KeyError:
+                ogs = {}
+            if ogs == {}:
+                data.append([seed, nb_position, nb_id, taxa])
+            else:
+                for og in ogs:
+                    ortholog = og
+                    try:
+                        contig = gene_dict_orthologs[taxa][ortholog].contig
+                    except KeyError:
+                        print(gene_protein_mapping)
+                        ortholog = gene_protein_mapping[taxa][og]
+                        contig = gene_dict_orthologs[taxa][ortholog].contig
+                    gene_nr_contig = gene_dict_orthologs[taxa][ortholog].gene_count_contig
+                    start = gene_dict_orthologs[taxa][ortholog].start
+                    stop = gene_dict_orthologs[taxa][ortholog].end
+                    strand = gene_dict_orthologs[taxa][ortholog].strand
+                    gene_count_contig = contig_dict[taxa][contig]
+                    data.append([seed, nb_position, nb_id, taxa, ortholog, contig, str(gene_count_contig), start, stop, strand, str(gene_nr_contig)])
+
+    df = pd.DataFrame(data, columns=['Seed', 'nb_position', 'nb_id', 'species', 'ortholog', 'contig', 'gene_count_contig', 'start', 'end', 'strand', 'gene_nr_contig'])
+    return df
 
 
 
@@ -287,7 +368,6 @@ def main ():
     optional.add_argument('--fasta', help='Path to protein fasta file', action='store', default ='')
     optional.add_argument('--searchTaxa', help='File containing search species line by line', action='store', default ='')
     optional.add_argument('--out', help='Output folder', action='store', default='')
-    optional.add_argument('--mapping_file', help='Path to file mapping gene ID and protein IDs', action='store', default ='')
     optional.add_argument('--searchpath', help='Path for the search taxa directory', action='store', default='')
     optional.add_argument('--corepath', help='Path for the core taxa directory', action='store', default='')
     optional.add_argument('--annopath', help='Path for the pre-calculated feature annotion directory', action='store', default='')
@@ -302,13 +382,20 @@ def main ():
     fasta_path = args.fasta
     taxa_path = args.searchTaxa
     out_folder = args.out
-    mapping_path = args.mapping_file
     corepath = args.corepath
     annopath= args.annopath
     searchpath= args.searchpath
 
+    refspec_mapping_dict = {}
 
-    #default_path = default_data_path() # in case I want to use the QfO data for core compilation, have ti find a away to add the reference species data
+    if fasta_path == '':
+        fasta_path = f"{searchpath}/{refSpec}/{refSpec}.fa"
+        if os.path.exists(f"{searchpath}/{refSpec}/{refSpec}.fa.mapping"):
+            refspec_mapping_dict = parse_mapping_file(f"{searchpath}/{refSpec}/{refSpec}.fa.mapping")
+
+
+
+    #default_path = default_data_path() # in case I want to use the QfO data for core compilation, have to find a away to add the reference species data
     gff_file = f"{gff_path}/{refSpec}.gff"
     genes = get_nb_from_gff(gff_file, ng, seed, refSpec)
     genes = nb_validation(genes,ng)
@@ -320,7 +407,7 @@ def main ():
         seed_folder = out_folder + "/tmp/seeds/"
         cmd = "mkdir -p " + seed_folder
         starting_subprocess(cmd)
-        longest_isoform = extract_seq(fasta_path, gene, seed_folder)
+        longest_isoform = extract_seq(fasta_path, gene, seed_folder, refspec_mapping_dict)
         gene.set_iso(longest_isoform)
 
 
@@ -329,9 +416,9 @@ def main ():
 
     fdog_out = f"{out_folder}/{jobName}.phyloprofile"
     seed_presence, seed_orthologs, genes_to_extract = parse_profile(fdog_out)
-    print(f'{seed_presence}\n')
+    #print(f'{seed_presence}\n')
     print(f'{seed_orthologs}\n')
-    print(f'{genes_to_extract}\n')
+    #print(f'{genes_to_extract}\n')
 
     if taxa_path == '':
         searchTaxa = [i.replace('.gff', '') for i in os.listdir(searchpath)]
@@ -339,21 +426,28 @@ def main ():
         searchTaxa = open(taxa_path,'r').readlines()
 
     gene_protein_mapping = {}
-    gene_dict = {}
+    gene_dict_orthologs = {}
+    contig_dict = {}
     for taxa in searchTaxa:
         #print(taxa)
         gff_file = f"{gff_path}/{taxa}.gff"
         if os.path.exists(f"{searchpath}/{taxa}/{taxa}.fa.mapping"):
-            gene_protein_mapping, mapped_set = mapping(f"{searchpath}/{taxa}/{taxa}.fa.mapping", genes_to_extract[taxa])
-            gene_dict[taxa] = get_positions_from_gff(gff_file, mapped_set, taxa)
+            gene_protein_mapping[taxa], mapped_set = mapping(f"{searchpath}/{taxa}/{taxa}.fa.mapping", genes_to_extract[taxa])
+            gene_dict_orthologs[taxa], contig_dict[taxa] = get_positions_from_gff(gff_file, mapped_set, taxa)
         else:
-            gene_dict[taxa] = get_positions_from_gff(gff_file, genes_to_extract[taxa], taxa)
+            gene_dict_orthologs[taxa], contig_dict[taxa] = get_positions_from_gff(gff_file, genes_to_extract[taxa], taxa)
 
-    for taxa in gene_dict:
+    for taxa in gene_dict_orthologs:
         print(taxa)
-        for g in gene_dict[taxa]:
-            obj = gene_dict[taxa][g]
+        for g in gene_dict_orthologs[taxa]:
+            obj = gene_dict_orthologs[taxa][g]
             print(g, obj.name, obj.species, obj.contig, obj.gene_count_contig, obj.start, obj.end, obj.strand, obj.position, sep=' ')
+        for g in contig_dict[taxa]:
+            print(f"contig {g} gene count:{contig_dict[taxa][g]}")
+
+    output_table = create_output(searchTaxa, refSpec, seed, genes, gene_dict_orthologs, seed_orthologs, contig_dict, gene_protein_mapping)
+    output_table.to_csv(f"{out_folder}/{jobName}.syntgeny.tsv", sep='\t')
+
     end = start - time.time()
     print(end)
 
