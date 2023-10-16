@@ -76,7 +76,6 @@ def get_nb_from_gff(gff_path, neighbours, seed, refSpec):
     gene_stack = deque()
     N = int(neighbours)
     stop = False
-    print(seed)
     protein_names = set()
     mrna_names = set()
     gene_count_contig = 0
@@ -217,7 +216,7 @@ def parse_profile(fdog_out):
         except KeyError:
             genes_to_extract[ortho_species] = {ortho_gene}
 
-    return seed_presence, seed_orthologs, genes_to_extract
+    return seed_orthologs, genes_to_extract
 
 def get_positions_from_gff(gff_path, genes, taxa):
     gene_name = ''
@@ -314,7 +313,7 @@ def create_output(searchTaxa, refSpec, seed, genes, gene_dict_orthologs, seed_or
     for index in range(nb-1,-1, -1):
         #print(genes[index].position)
         for taxa in searchTaxa:
-            nb_id = genes[index].name
+            nb_id = getattr(genes[index], 'name')
             nb_position = genes[index].position
             name_dict = genes[index].name
             try:
@@ -331,21 +330,28 @@ def create_output(searchTaxa, refSpec, seed, genes, gene_dict_orthologs, seed_or
                 for og in ogs:
                     ortholog = og
                     try:
-                        contig = gene_dict_orthologs[taxa][ortholog].contig
+                        contig = str(gene_dict_orthologs[taxa][ortholog].contig)
                     except KeyError:
-                        print(gene_protein_mapping)
-                        ortholog = gene_protein_mapping[taxa][og]
-                        contig = gene_dict_orthologs[taxa][ortholog].contig
-                    gene_nr_contig = gene_dict_orthologs[taxa][ortholog].gene_count_contig
-                    start = gene_dict_orthologs[taxa][ortholog].start
-                    stop = gene_dict_orthologs[taxa][ortholog].end
-                    strand = gene_dict_orthologs[taxa][ortholog].strand
-                    gene_count_contig = contig_dict[taxa][contig]
-                    data.append([seed, nb_position, nb_id, taxa, ortholog, contig, str(gene_count_contig), start, stop, strand, str(gene_nr_contig)])
+                        ortholog = str(gene_protein_mapping[taxa][og])
+                        contig = getattr(gene_dict_orthologs[taxa][ortholog], 'contig')
+                    gene_nr_contig = getattr(gene_dict_orthologs[taxa][ortholog], 'gene_count_contig')
+                    start = int(gene_dict_orthologs[taxa][ortholog].start)
+                    stop = int(gene_dict_orthologs[taxa][ortholog].end)
+                    strand = str(gene_dict_orthologs[taxa][ortholog].strand)
+                    gene_count_contig = int(contig_dict[taxa][contig])
+                    data.append([seed, nb_position, nb_id, taxa, ortholog, contig, gene_count_contig, start, stop, strand, gene_nr_contig, None])
 
-    df = pd.DataFrame(data, columns=['Seed', 'nb_position', 'nb_id', 'species', 'ortholog', 'contig', 'gene_count_contig', 'start', 'end', 'strand', 'gene_nr_contig'])
+    df = pd.DataFrame(data, columns=['seed', 'nb_position', 'nb_id', 'species', 'ortholog', 'contig', 'gene_count_contig', 'start', 'end', 'strand', 'gene_nr_contig', 'gene_position_to_seed'])
     return df
 
+def get_gene_position_to_seed(output_table, searchTaxa):
+    for taxa in searchTaxa:
+        seed_gene = output_table.loc[(output_table['species'] == taxa) & (output_table['nb_position'] == 0)]
+        seed_position = seed_gene['gene_nr_contig'].values[0]
+        seed_contig = seed_gene['contig'].values[0]
+        output_table.loc[(output_table['species'] == taxa) & ( output_table['contig'] == seed_contig),'gene_position_to_seed'] = output_table['gene_nr_contig'] - seed_position
+
+    return output_table
 
 
 def main ():
@@ -393,15 +399,12 @@ def main ():
         if os.path.exists(f"{searchpath}/{refSpec}/{refSpec}.fa.mapping"):
             refspec_mapping_dict = parse_mapping_file(f"{searchpath}/{refSpec}/{refSpec}.fa.mapping")
 
-
+    print(f"Extracting neighbours of seed gene {seed}")
 
     #default_path = default_data_path() # in case I want to use the QfO data for core compilation, have to find a away to add the reference species data
     gff_file = f"{gff_path}/{refSpec}.gff"
     genes = get_nb_from_gff(gff_file, ng, seed, refSpec)
     genes = nb_validation(genes,ng)
-
-    for obj in genes:
-        print(obj.name, obj.species, obj.contig, obj.gene_count_contig, obj.start, obj.end, obj.strand, obj.position, sep=' ')
 
     for gene in genes:
         seed_folder = out_folder + "/tmp/seeds/"
@@ -410,15 +413,12 @@ def main ():
         longest_isoform = extract_seq(fasta_path, gene, seed_folder, refspec_mapping_dict)
         gene.set_iso(longest_isoform)
 
+    print(f"Starting fDOG for seed gene and identified neighbours")
+    start_fdog(seed_folder, refSpec, searchpath, annopath, corepath, jobName, out_folder, taxa_path)
 
-    #start_fdog(seed_folder, refSpec, searchpath, annopath, corepath, jobName, out_folder, taxa_path)
-
-
+    print(f"fDOG finished. Parsing fDOG output and extracting ortholog locations")
     fdog_out = f"{out_folder}/{jobName}.phyloprofile"
-    seed_presence, seed_orthologs, genes_to_extract = parse_profile(fdog_out)
-    #print(f'{seed_presence}\n')
-    print(f'{seed_orthologs}\n')
-    #print(f'{genes_to_extract}\n')
+    seed_orthologs, genes_to_extract = parse_profile(fdog_out)
 
     if taxa_path == '':
         searchTaxa = [i.replace('.gff', '') for i in os.listdir(searchpath)]
@@ -436,17 +436,13 @@ def main ():
             gene_dict_orthologs[taxa], contig_dict[taxa] = get_positions_from_gff(gff_file, mapped_set, taxa)
         else:
             gene_dict_orthologs[taxa], contig_dict[taxa] = get_positions_from_gff(gff_file, genes_to_extract[taxa], taxa)
-
-    for taxa in gene_dict_orthologs:
-        print(taxa)
-        for g in gene_dict_orthologs[taxa]:
-            obj = gene_dict_orthologs[taxa][g]
-            print(g, obj.name, obj.species, obj.contig, obj.gene_count_contig, obj.start, obj.end, obj.strand, obj.position, sep=' ')
-        for g in contig_dict[taxa]:
-            print(f"contig {g} gene count:{contig_dict[taxa][g]}")
+    print("Creating output table")
 
     output_table = create_output(searchTaxa, refSpec, seed, genes, gene_dict_orthologs, seed_orthologs, contig_dict, gene_protein_mapping)
-    output_table.to_csv(f"{out_folder}/{jobName}.syntgeny.tsv", sep='\t')
+
+    output_table = get_gene_position_to_seed(output_table, searchTaxa)
+    output_table = output_table.astype({'gene_count_contig': 'Int64', 'start': 'Int64', 'end':'Int64', 'gene_nr_contig': 'Int64', 'gene_position_to_seed': 'Int64'})
+    output_table.to_csv(f"{out_folder}/{jobName}.syntgeny.tsv", sep='\t', index=False)
 
     end = start - time.time()
     print(end)
